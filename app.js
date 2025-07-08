@@ -10,7 +10,7 @@ import mongoose from "mongoose";
 const app = express();
 const PORT = 3000;
 const MAX_CACHE_SIZE = 500;
-const MONGO_URI = `mongodb+srv://devposto:QG0X8FqYcLHfM8ET@cluster0.0smalyx.mongodb.net/?retryWrites=true&w=majority`;
+const MONGO_URI = `mongodb+srv://devposto:QG0X8FqYcLHfM8ET@cluster0.0smalyx.mongodb.net/?retryWrites=true&w=majority&tls=true`;
 
 // ====== MongoDB Model ======
 const domainSchema = new mongoose.Schema({
