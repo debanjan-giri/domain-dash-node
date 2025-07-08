@@ -1,29 +1,36 @@
-// import "./scheduler.js";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import { v4 as uuidv4 } from "uuid";
 import QuickLRU from "quick-lru";
 import tls from "tls";
-import fs from "fs/promises";
+import mongoose from "mongoose";
+import dotenv from "dotenv";
 
+// ====== Config ======
 const app = express();
+dotenv.config();
 const PORT = process.env.PORT || 3000;
 const MAX_CACHE_SIZE = 200;
-const DOMAIN_FILE = "domain.json";
+const MONGO_URI = `mongodb+srv://${process.env.ID}:${process.env.PASSWORD}@cluster0.0smalyx.mongodb.net/?retryWrites=true&w=majority`;
 
-// ====== Ensure file exists ======
-async function ensureDomainFileExists() {
-  try {
-    await fs.access(DOMAIN_FILE);
-  } catch {
-    await fs.writeFile(DOMAIN_FILE, JSON.stringify([], null, 2));
-  }
-}
-await ensureDomainFileExists();
+// ====== MongoDB Model ======
+const domainSchema = new mongoose.Schema({
+  domain: { type: String, required: true, unique: true },
+  createdAt: { type: Date, default: Date.now },
+});
+const Domain = mongoose.model("Domain", domainSchema);
 
-// ====== In-memory SSL Cache ======
+// ====== Connect to MongoDB ======
+mongoose.connect(MONGO_URI);
+mongoose.connection.on("connected", () => {
+  console.log("📦 Connected to MongoDB Atlas");
+});
+mongoose.connection.on("error", (err) => {
+  console.error("❌ MongoDB connection error:", err);
+});
+
+// ====== SSL Cache ======
 const certCache = new QuickLRU({ maxSize: MAX_CACHE_SIZE });
 
 // ====== Middleware ======
@@ -31,7 +38,6 @@ app.use(cors());
 app.use(express.json());
 app.use(helmet());
 
-// Rate Limiting
 app.use(
   "/certificate-info",
   rateLimit({
@@ -41,7 +47,7 @@ app.use(
   })
 );
 
-// ====== Utilities ======
+// ====== Utility Functions ======
 const formatLocalDate = (dateStr) =>
   new Date(dateStr).toLocaleString("en-IN", {
     timeZone: "Asia/Kolkata",
@@ -51,15 +57,6 @@ const formatLocalDate = (dateStr) =>
 const validateDomain = (domain) =>
   typeof domain === "string" &&
   /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(domain.trim());
-
-const getDomainData = async () => {
-  const data = await fs.readFile(DOMAIN_FILE, "utf-8");
-  return JSON.parse(data);
-};
-
-const saveDomainData = async (data) => {
-  await fs.writeFile(DOMAIN_FILE, JSON.stringify(data, null, 2));
-};
 
 const getSSLCertificateCached = async (domain, port = 443) => {
   if (certCache.has(domain)) {
@@ -127,8 +124,12 @@ app.get("/certificate-info", async (req, res) => {
 
 // 📄 List all domains
 app.get("/certificate-list", async (_, res) => {
-  const domains = await getDomainData();
-  res.json(domains);
+  try {
+    const domains = await Domain.find().sort({ createdAt: -1 });
+    res.json(domains);
+  } catch (err) {
+    res.status(500).json({ error: "Failed to fetch domains." });
+  }
 });
 
 // ➕ Add a domain
@@ -139,36 +140,32 @@ app.post("/certificate-create", async (req, res) => {
     return res.status(400).json({ error: "Invalid domain." });
 
   const domainTrimmed = domain.trim();
-  const domains = await getDomainData();
 
-  if (domains.some((d) => d.domain === domainTrimmed))
-    return res.status(409).json({ error: "Domain already exists." });
+  try {
+    const existing = await Domain.findOne({ domain: domainTrimmed });
+    if (existing)
+      return res.status(409).json({ error: "Domain already exists." });
 
-  const newEntry = {
-    id: uuidv4(),
-    domain: domainTrimmed,
-    createdAt: new Date().toISOString(),
-  };
-
-  domains.push(newEntry);
-  await saveDomainData(domains);
-
-  res.status(201).json({ message: "Domain added", id: newEntry.id });
+    const newEntry = await Domain.create({ domain: domainTrimmed });
+    res.status(201).json({ message: "Domain added", id: newEntry._id });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to create domain." });
+  }
 });
 
 // ❌ Delete a domain
 app.delete("/certificate-delete/:id", async (req, res) => {
   const { id } = req.params;
-  const domains = await getDomainData();
-  const index = domains.findIndex((d) => d.id === id);
 
-  if (index === -1) return res.status(404).json({ error: "Domain not found." });
+  try {
+    const deleted = await Domain.findByIdAndDelete(id);
+    if (!deleted) return res.status(404).json({ error: "Domain not found." });
 
-  const [deleted] = domains.splice(index, 1);
-  await saveDomainData(domains);
-
-  certCache.delete(deleted.domain);
-  res.json({ message: "Domain deleted." });
+    certCache.delete(deleted.domain);
+    res.json({ message: "Domain deleted." });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to delete domain." });
+  }
 });
 
 // ====== Start Server ======
