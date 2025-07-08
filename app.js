@@ -8,38 +8,34 @@ import mongoose from "mongoose";
 
 // ====== Config ======
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = 3000;
 const MAX_CACHE_SIZE = 500;
+const MONGO_URI = `mongodb+srv://devposto:QG0X8FqYcLHfM8ET@cluster0.0smalyx.mongodb.net/?retryWrites=true&w=majority`;
 
-// ✅ Recommended URI Format with TLS
-const MONGO_URI = `mongodb+srv://devposto:QG0X8FqYcLHfM8ET@cluster0.0smalyx.mongodb.net/test?retryWrites=true&w=majority&tls=true`;
-mongoose.set("strictQuery", true); // ✅ Avoid deprecation warnings
-
-// ====== MongoDB Schema ======
+// ====== MongoDB Model ======
 const domainSchema = new mongoose.Schema({
   domain: { type: String, required: true, unique: true },
   createdAt: { type: Date, default: Date.now },
 });
 const Domain = mongoose.model("Domain", domainSchema);
 
-// ====== MongoDB Connection ======
-mongoose
-  .connect(MONGO_URI, {
-    useNewUrlParser: true,
-    useUnifiedTopology: true,
-    tls: true,
-    // tlsInsecure: true, // ⚠️ Only enable if debugging and trust risk
-  })
-  .then(() => console.log("📦 Connected to MongoDB Atlas"))
-  .catch((err) =>
-    console.error("❌ MongoDB connection error:\n", err.message)
-  );
+// ====== Connect to MongoDB ======
+mongoose.connect(MONGO_URI);
+mongoose.connection.on("connected", () => {
+  console.log("📦 Connected to MongoDB Atlas");
+});
+mongoose.connection.on("error", (err) => {
+  console.error("❌ MongoDB connection error:", err);
+});
 
-// ====== Cache & Middleware ======
+// ====== SSL Cache ======
 const certCache = new QuickLRU({ maxSize: MAX_CACHE_SIZE });
+
+// ====== Middleware ======
 app.use(cors());
 app.use(express.json());
 app.use(helmet());
+
 app.use(
   "/certificate-info",
   rateLimit({
@@ -49,7 +45,7 @@ app.use(
   })
 );
 
-// ====== Helpers ======
+// ====== Utility Functions ======
 const formatLocalDate = (dateStr) =>
   new Date(dateStr).toLocaleString("en-IN", {
     timeZone: "Asia/Kolkata",
@@ -70,12 +66,7 @@ const getSSLCertificateCached = async (domain, port = 443) => {
 
   return new Promise((resolve, reject) => {
     const socket = tls.connect(
-      {
-        host: domain,
-        port,
-        servername: domain,
-        rejectUnauthorized: false, // <== allow even self-signed certs
-      },
+      { host: domain, port, servername: domain, rejectUnauthorized: false },
       () => {
         const cert = socket.getPeerCertificate();
         if (!cert || !Object.keys(cert).length)
@@ -117,6 +108,7 @@ const getSSLCertificateCached = async (domain, port = 443) => {
 // 🔍 Get certificate info
 app.get("/certificate-info", async (req, res) => {
   const { domain } = req.query;
+
   if (!validateDomain(domain))
     return res.status(400).json({ error: "Invalid or missing domain." });
 
@@ -141,11 +133,13 @@ app.get("/certificate-list", async (_, res) => {
 // ➕ Add a domain
 app.post("/certificate-create", async (req, res) => {
   const { domain } = req.body;
+
   if (!validateDomain(domain))
     return res.status(400).json({ error: "Invalid domain." });
 
+  const domainTrimmed = domain.trim();
+
   try {
-    const domainTrimmed = domain.trim();
     const existing = await Domain.findOne({ domain: domainTrimmed });
     if (existing)
       return res.status(409).json({ error: "Domain already exists." });
@@ -159,8 +153,10 @@ app.post("/certificate-create", async (req, res) => {
 
 // ❌ Delete a domain
 app.delete("/certificate-delete/:id", async (req, res) => {
+  const { id } = req.params;
+
   try {
-    const deleted = await Domain.findByIdAndDelete(req.params.id);
+    const deleted = await Domain.findByIdAndDelete(id);
     if (!deleted) return res.status(404).json({ error: "Domain not found." });
 
     certCache.delete(deleted.domain);
