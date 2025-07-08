@@ -5,14 +5,12 @@ import rateLimit from "express-rate-limit";
 import QuickLRU from "quick-lru";
 import tls from "tls";
 import mongoose from "mongoose";
-import dotenv from "dotenv";
 
 // ====== Config ======
 const app = express();
-dotenv.config();
-const PORT = process.env.PORT || 3000;
-const MAX_CACHE_SIZE = 200;
-const MONGO_URI = `mongodb+srv://${process.env.ID}:${process.env.PASSWORD}@cluster0.0smalyx.mongodb.net/?retryWrites=true&w=majority`;
+const PORT = 3000;
+const MAX_CACHE_SIZE = 500;
+const MONGO_URI = `mongodb+srv://devposto:QG0X8FqYcLHfM8ET@cluster0.0smalyx.mongodb.net/?retryWrites=true&w=majority`;
 
 // ====== MongoDB Model ======
 const domainSchema = new mongoose.Schema({
