@@ -1,3 +1,4 @@
+import "./scheduler.js";
 import express from "express";
 import cors from "cors";
 import helmet from "helmet";
@@ -5,6 +6,8 @@ import rateLimit from "express-rate-limit";
 import QuickLRU from "quick-lru";
 import tls from "tls";
 import mongoose from "mongoose";
+import compression from "compression";
+import dns from "dns";
 
 // ====== Config ======
 const app = express();
@@ -12,29 +15,42 @@ const PORT = 3000;
 const MAX_CACHE_SIZE = 500;
 const MONGO_URI = `mongodb+srv://devposto:QG0X8FqYcLHfM8ET@cluster0.0smalyx.mongodb.net/?retryWrites=true&w=majority`;
 
-// ====== MongoDB Model ======
+// ====== MongoDB Schema ======
 const domainSchema = new mongoose.Schema({
   domain: { type: String, required: true, unique: true },
   createdAt: { type: Date, default: Date.now },
 });
-const Domain = mongoose.model("Domain", domainSchema);
+export const Domain = mongoose.model("Domain", domainSchema);
 
-// ====== Connect to MongoDB ======
+// ====== Mongo Connection ======
 mongoose.connect(MONGO_URI);
 mongoose.connection.on("connected", () => {
   console.log("📦 Connected to MongoDB Atlas");
+  preloadDomains(); // Prewarm TLS cache on startup
 });
 mongoose.connection.on("error", (err) => {
   console.error("❌ MongoDB connection error:", err);
 });
 
-// ====== SSL Cache ======
+// ====== Cache and DNS Lookup ======
 const certCache = new QuickLRU({ maxSize: MAX_CACHE_SIZE });
+const dnsCache = new Map();
+
+const cachedLookup = (hostname, options, callback) => {
+  if (dnsCache.has(hostname)) {
+    return process.nextTick(() => callback(null, dnsCache.get(hostname), 4));
+  }
+  dns.lookup(hostname, options, (err, address, family) => {
+    if (!err) dnsCache.set(hostname, address);
+    callback(err, address, family);
+  });
+};
 
 // ====== Middleware ======
 app.use(cors());
 app.use(express.json());
 app.use(helmet());
+app.use(compression());
 
 app.use(
   "/certificate-info",
@@ -56,7 +72,7 @@ const validateDomain = (domain) =>
   typeof domain === "string" &&
   /^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(domain.trim());
 
-const getSSLCertificateCached = async (domain, port = 443) => {
+export const getSSLCertificateCached = async (domain, port = 443) => {
   if (certCache.has(domain)) {
     console.log(`✅ [CACHE HIT] ${domain}`);
     return certCache.get(domain);
@@ -66,7 +82,13 @@ const getSSLCertificateCached = async (domain, port = 443) => {
 
   return new Promise((resolve, reject) => {
     const socket = tls.connect(
-      { host: domain, port, servername: domain, rejectUnauthorized: false },
+      {
+        host: domain,
+        port,
+        servername: domain,
+        rejectUnauthorized: false,
+        lookup: cachedLookup,
+      },
       () => {
         const cert = socket.getPeerCertificate();
         if (!cert || !Object.keys(cert).length)
@@ -98,9 +120,34 @@ const getSSLCertificateCached = async (domain, port = 443) => {
 
     socket.on("error", (err) => {
       console.error(`❌ [TLS ERROR] ${domain}: ${err.message}`);
-      reject(err);
+      reject(new Error(`TLS error for ${domain}`));
+    });
+
+    socket.setTimeout(7000, () => {
+      socket.destroy();
+      reject(new Error("TLS request timed out."));
     });
   });
+};
+
+// ====== Preload Top Domains ======
+const preloadDomains = async () => {
+  console.log("🚀 Prewarming TLS cache...");
+  try {
+    const topDomains = await Domain.find()
+      .sort({ createdAt: -1 })
+      .limit(20)
+      .lean();
+    for (const { domain } of topDomains) {
+      try {
+        await getSSLCertificateCached(domain);
+      } catch (e) {
+        console.warn(`⚠️ Failed to preload ${domain}: ${e.message}`);
+      }
+    }
+  } catch (err) {
+    console.error("❌ Failed to preload domains:", err.message);
+  }
 };
 
 // ====== Routes ======
@@ -123,7 +170,7 @@ app.get("/certificate-info", async (req, res) => {
 // 📄 List all domains
 app.get("/certificate-list", async (_, res) => {
   try {
-    const domains = await Domain.find().sort({ createdAt: -1 });
+    const domains = await Domain.find().sort({ createdAt: -1 }).lean();
     res.json(domains);
   } catch (err) {
     res.status(500).json({ error: "Failed to fetch domains." });
