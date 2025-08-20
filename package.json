@@ -22,6 +22,7 @@
     "nodemailer": "^7.0.5",
     "nodemon": "^3.1.10",
     "quick-lru": "^7.0.1",
-    "tls": "^0.0.1"
+    "tls": "^0.0.1",
+    "whois-json": "^2.0.4"
   }
 }
